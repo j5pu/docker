@@ -1,0 +1,14 @@
+---
+# handlers file for service_docker
+- name: restart docker
+  service:
+    name: docker
+    state: "{{ 'restarted' if inventory_hostname in docker_hosts else 'stopped' }}"
+
+- name: restart containerd
+  service:
+    name: containerd
+    state: "{{ 'restarted' if inventory_hostname in docker_hosts else 'stopped' }}"
+
+- name: reboot
+  reboot:

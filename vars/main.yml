@@ -1,0 +1,31 @@
+---
+# vars file for service_docker
+docker_dockerd_debug: truef
+
+# Edition can be one of: 'ce' (Community Edition) or 'ee' (Enterprise Edition).
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-compose
+docker_package_state: present
+
+# Service options.
+# Labels y Constrains sin ''
+# Puertos con ''
+
+docker_service_state: started
+docker_service_enabled: true
+docker_restart_handler_state: restarted
+docker_systemd_service: docker.service
+docker_daemon_json: false
+docker_bind_address: "{{ openvpn_ip }}"
+docker_timeout: 120
+
+# Used only for Debian/Ubuntu. Switch 'stable' to 'edge' if needed.
+docker_apt_release_channel: edge
+docker_apt_arch: amd64
+docker_apt_repository: "deb [arch={{ docker_apt_arch }}] https://download.docker.com/linux/{{ ansible_distribution|lower }} {{ ansible_distribution_release }} {{ docker_apt_release_channel }}"
+docker_apt_ignore_key_attempts: true
+
+docker_swarm_info_timeout: "{{ docker_timeout }}"

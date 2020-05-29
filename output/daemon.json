@@ -1,0 +1,12 @@
+{
+  "log-driver": "fluentd",
+  "log-opts": {
+    "fluentd-address": "tcp://fluentd.vpn:50009",
+    "fluentd-async-connect": "false",
+    "fluentd-buffer-limit": "1G",
+    "fluentd-max-retries": "4294967295",
+    "fluentd-retry-wait": "1",
+    "fluentd-sub-second-precision": "false",
+    "tag": "{{.Name}}/{{.FullID}}/{{.ImageName}}/{{.ImageFullID}}/{{.DaemonName}}"
+  }
+}

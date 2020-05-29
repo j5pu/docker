@@ -1,0 +1,218 @@
+---
+# tasks file for service_swarm
+## https://docs.traefik.io/user-guide/swarm-mode/
+## Multi-host networking with standalone swarms
+## https://docs.docker.com/network/overlay-standalone.swarm/
+## Use overlay networks
+## https://docs.docker.com/engine/swarm/swarm-tutorial/
+- name: service_swarm
+  block:
+    - name: check play called with all hosts
+      assert:
+        that: ansible_play_hosts|sort == groups.all|sort
+        fail_msg: ansible_play_hosts != groups.all
+        success_msg: ansible_play_hosts == groups.all
+      ignore_errors: yes
+      run_once: True
+      connection: local
+      when: ansible_play_hosts|sort != groups.all|sort
+
+    - name: fail service_swarm needs to run with all hosts
+      fail:
+      when: ansible_play_hosts|sort != groups.all|sort
+
+    - name: set ansible_ssh_host to openvpn_ip para que al delegar en el host se pueda conectar
+      set_fact:
+        ansible_ssh_host: "{{ openvpn_ip }}"
+      when: inventory_hostname not in groups.DEV
+
+    - name: get first active manager
+      shell: "{{ role_path }}/files/get-first-manager.sh {{ docker_swarm_managers | join(' ') }}"
+      args:
+        executable: /bin/bash
+      register: first_active_manager
+      run_once: True
+      failed_when: False
+      changed_when: False
+      connection: local
+
+    - name: set fact manager when active manager found to reuse the swarm otherwise docker_swarm_leader
+      set_fact:
+        manager: "{{ first_active_manager.stdout_lines[0] if first_active_manager.rc == 0 else docker_swarm_leader }}"
+
+    - name: swarm init
+      docker_swarm:
+        listen_addr: "{{ hostvars[manager]['docker_swarm_addr'] }}"
+        advertise_addr: "{{ hostvars[manager]['docker_swarm_addr'] }}"
+      register: swarm_init
+      run_once: True
+      delegate_to: "{{ manager }}"
+
+    - name: get swarm info
+      docker_swarm_info:
+        timeout: "{{ docker_swarm_info_timeout }}"
+        nodes: yes
+      register: swarm_info
+      failed_when: False
+      changed_when: False
+      run_once: True
+      delegate_to: "{{ manager }}"
+
+    - name: list of nodes in swarm
+      set_fact:
+        swarm_info_nodes: "{{ swarm_info_nodes|default([]) + [item.Hostname] }}"
+      loop_control:
+        label: "{{ item.Hostname }}"
+      loop: "{{ swarm_info.nodes }}"
+      run_once: True
+      delegate_to: "{{ manager }}"
+
+    - name: set list of nodes to be purged from older swarn
+      set_fact:
+        swarm_info_nodes_old_swarm: "{{ swarm_info_nodes | difference(docker_swarm_hosts) }}"
+      run_once: True
+      delegate_to: "{{ manager }}"
+
+    - name: node rm huerfanos
+      shell: |
+        docker node demote {{ item }}
+        docker node rm {{ item }}
+      run_once: True
+      delegate_to: "{{ manager }}"
+      loop: "{{ swarm_info_nodes_old_swarm }}"
+      when: swarm_info_nodes_old_swarm is defined
+
+    - name: get swarm info to see which ones are down
+      docker_swarm_info:
+        nodes: yes
+      register: swarm_info
+      failed_when: False
+      changed_when: False
+      run_once: True
+      delegate_to: "{{ manager }}"
+
+    - name: restart docker for the nodes down
+      service:
+        name: docker
+        state: restarted
+      delegate_to: "{{ item.Hostname }}"
+      delegate_facts: True
+      run_once: True
+      loop_control:
+        label: "{{ item.Hostname }}"
+      loop: "{{ swarm_info.nodes }}"
+      when: item.Hostname not in groups.DEV and swarm_info is defined and item.Status == "down"
+
+    - name: get swarm info to see which ones are down after docker restart
+      docker_swarm_info:
+        nodes: yes
+      register: swarm_info
+      failed_when: False
+      changed_when: False
+      run_once: True
+      delegate_to: "{{ manager }}"
+
+    - name: node rm muertos
+      shell: |
+        docker node demote {{ item.Hostname }}
+        docker node rm {{ item.Hostname }}
+      run_once: True
+      delegate_to: "{{ manager }}"
+      loop_control:
+        label: "{{ item.Hostname }}"
+      loop: "{{ swarm_info.nodes }}"
+      when: item.Hostname not in groups.DEV and swarm_info is defined and item.Status == "down"
+
+    - name: swarm join managers and workers but docker_swarm_leader for all but manager
+      docker_swarm:
+        state: join
+        join_token: "{{ swarm_init.swarm_facts.JoinTokens.Manager if item in docker_swarm_managers else swarm_init.swarm_facts.JoinTokens.Worker }}"
+        listen_addr: "{{ hostvars[item]['docker_swarm_addr'] }}"
+        advertise_addr: "{{ hostvars[item]['docker_swarm_addr'] }}"
+        remote_addrs: "{{ hostvars[manager]['docker_swarm_addr'] }}"
+        timeout: "{{ docker_timeout }}"
+      register: join_result
+      until: join_result is succeeded
+      retries: 3
+      delay: 10
+      run_once: True
+      delegate_to: "{{ item }}"
+      delegate_facts: True
+      loop: "{{ docker_swarm_hosts | difference([ manager ]) }}"
+
+    - name: swarm node --availability for managers
+      docker_node:
+        availability: "{{ 'drain' if docker_swarm_managers_drain == true else 'active' }}"
+        hostname: "{{ item }}"
+      loop: "{{ docker_swarm_managers_drain_hosts }}"
+      when:
+        - docker_swarm_managers_drain
+        - docker_swarm_managers_drain_hosts is defined
+        - inventory_hostname in docker_swarm_managers_drain_hosts
+
+    - name: swarm node --availability for managers not drain
+      docker_node:
+        availability: "{{ 'drain' if docker_swarm_managers_drain == true else 'active' }}"
+        hostname: "{{ item }}"
+      loop: "{{ docker_swarm_managers_drain_hosts }}"
+      when:
+        - not docker_swarm_managers_drain
+        - docker_swarm_managers_drain_hosts is defined
+        - inventory_hostname in docker_swarm_managers_drain_hosts
+
+    - name: get swarm info
+      docker_swarm_info:
+        timeout: "{{ docker_swarm_info_timeout }}"
+        nodes: yes
+      register: swarm_info_updated
+      failed_when: False
+      changed_when: False
+      run_once: True
+      delegate_to: "{{ manager }}"
+
+    ## Ignoro los errores por si hay Hostnames que se han reinstalado y están inactivos y daba error al actualizar labels
+    ## por haber dos hostnames iguales. Asi que limpiarlos a mano que no tengo ganas
+    - name: swarm node update labels for all
+      docker_node:
+        hostname: "{{ item.ID }}"
+        labels: "{{ docker_swarm_node_labels }}"
+      failed_when: False
+      loop: "{{ swarm_info_updated.nodes }}"
+      loop_control:
+        label: "{{ item.Hostname }}"
+      when: inventory_hostname == manager
+
+    - name: "---- ¡¡¡ Nodos reinstalados o muertos !!! - ¡¡¡ Limpiarlos !!! -------"
+      debug:
+        msg:
+          - "----------------¡¡¡ Nodos reinstalados o muertos !!! -----------------"
+          - "--------- docker node ls                             -----------------"
+          - "--------- docker node demote                         -----------------"
+          - "--------- docker node rm                             -----------------"
+      when: inventory_hostname == manager and swarm_info_updated.nodes|length != docker_swarm_hosts|length
+
+    - debug:
+        msg:
+          - "Hostname: {{ item.Hostname }} - ID: {{ item.ID }} - Status: {{ item.ID }}"
+      loop: "{{ swarm_info_updated.nodes }}"
+      loop_control:
+        label: "{{ item.Hostname }}"
+      when: inventory_hostname == manager and swarm_info_updated.nodes|length != docker_swarm_hosts|length
+
+    - name: network create --driver=overlay --attachable
+      docker_network:
+        attachable: yes
+        driver: overlay
+        name:  "{{ docker_swarm_network }}"
+        timeout: "{{ docker_timeout }}"
+      run_once: True
+      delegate_to: "{{ manager }}"
+
+#    - name: set ansible_ssh_host to openvpn_ip para que al delegar en el host se pueda conectar
+#      set_fact:
+#        ansible_ssh_host: "{{ ip }}"
+#      when: inventory_hostname not in groups.DEV
+  tags:
+    - docker
+    - swarm
+

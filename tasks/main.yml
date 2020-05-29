@@ -1,0 +1,131 @@
+---
+# tasks file for docker
+## wget https://raw.githubusercontent.com/dotcloud/docker/master/contrib/check-config.sh
+- name: block docker
+  block:
+    - name: check if docker installed
+      stat:
+        path: /usr/bin/docker
+      register: docker_install
+      changed_when: False
+      failed_when: False
+
+    - name: add docker key and repo
+      shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -;
+        add-apt-repository \
+           "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+           $(lsb_release -cs) \
+           stable test"
+        apt-get update
+      when: docker_install.stat.exists == false
+
+    - name: install Docker
+      package:
+        name: "{{ item }}"
+        state: "{{ docker_package_state }}"
+        update_cache: true
+      loop: "{{ docker_packages }}"
+      notify: restart docker
+
+    - name: pip docker
+      pip:
+        name: docker
+      when: ansible_distribution_version == '19.04'
+
+    - name: create {{ systemd_dir }}/docker.service.d
+      file:
+        path: "{{ systemd_dir }}/docker.service.d"
+        state: directory
+
+    - name: copy systemd docker override.conf
+      template:
+        src: docker-override.conf.j2
+        dest: "{{ systemd_dir }}/docker.service.d/override.conf"
+        owner: root
+        group: root
+        mode: 0644
+      register: systemd_conf
+      notify: reboot
+
+    - name: systemctl daemon reload
+      systemd:
+        daemon_reload: yes
+      when:
+        - systemd_conf is defined
+        - systemd_conf.changed
+
+    - name: ensure docker users are added to the docker group
+      user:
+        name: "{{ usuario }}"
+        groups: docker
+        append: true
+      register: user_added
+
+    - name: copy daemon.json
+      template:
+        src: daemon.json.j2
+        dest: "/etc/docker/daemon.json"
+        owner: root
+        group: root
+        mode: 0644
+      notify: restart docker
+      when: ansible_distribution == 'Ubuntu' and docker_daemon_json
+      tags:
+        - service_docker
+        - docker
+        - swarm
+        - docker_json
+
+    - name: copy daemon.json
+      file:
+        dest: "/etc/docker/daemon.json"
+        state: "{{ 'present' if docker_daemon_json else 'absent' }}"
+      notify: restart docker
+      when: ansible_distribution == 'Ubuntu'
+      tags:
+        - service_docker
+        - docker
+        - swarm
+        - docker_json
+
+    - name: reboot if user added
+      reboot:
+      when:
+        - user_added is defined
+        - user_added.changed
+
+    - name: ensure Docker is started and enabled at boot
+      service:
+        name: docker
+        state: "{{ 'started' if inventory_hostname in docker_hosts else 'stopped' }}"
+        enabled: "{{ false if service_services else true }}"
+      notify: reboot
+      when: inventory_hostname in docker_hosts
+  when: ansible_distribution == 'Ubuntu'
+  tags:
+    - service_docker
+    - docker
+
+- meta: flush_handlers
+  tags:
+    - service_docker
+    - docker
+
+- name: socat tcp mac
+  template:
+    src: docker-tcp.sh.j2
+    dest: /usr/local/bin/docker-tcp.sh
+    owner: "{{ usuario }}"
+    group: "{{ usuario }}"
+    mode: +x
+  when: ansible_distribution == 'MacOSX'
+  tags:
+    - service_docker
+    - docker
+
+- include_tasks: swarm.yml
+  tags:
+    - service_docker
+    - docker
+    - swarm

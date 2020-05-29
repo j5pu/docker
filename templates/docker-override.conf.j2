@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+# https://serverfault.com/questions/736624/systemd-service-automatic-restart-after-startlimitinterval
+# StartLimitInterval' must be greater than 'RestartSec * StartLimitBurst'
+# StartLimitBurst (Times Restart) at RestartSec (Intervals)
+[Service]
+ExecStart=
+RestartSec=
+StartLimitInterval=
+StartLimitBurst=3
+
+RestartSec=5
+StartLimitInterval=400
+StartLimitBurst=60
+{% if docker_dockerd_debug %}
+{% if inventory_hostname in groups.TEST %}
+ExecStart=/usr/bin/dockerd --debug --experimental --insecure-registry {{ docker_registry_url }} -H fd:// -H {{ docker_proto }}://{{ docker_bind_address }}:{{ docker_port }} -H {{ docker_proto }}://{{ ansible_ssh_host }}:{{ docker_port }} --containerd=/run/containerd/containerd.sock
+{% else %}
+ExecStart=/usr/bin/dockerd --debug --experimental --insecure-registry {{ docker_registry_url }} -H fd:// -H {{ docker_proto }}://{{ docker_bind_address }}:{{ docker_port }} --containerd=/run/containerd/containerd.sock
+{% endif %}
+{% else %}
+{% if inventory_hostname in groups.TEST %}
+ExecStart=/usr/bin/dockerd --experimental --insecure-registry {{ docker_registry_url }} -H fd:// -H {{ docker_proto }}://{{ docker_bind_address }}:{{ docker_port }} -H {{ docker_proto }}://{{ ansible_ssh_host }}:{{ docker_port }} --containerd=/run/containerd/containerd.sock
+{% else %}
+ExecStart=/usr/bin/dockerd --experimental --insecure-registry {{ docker_registry_url }} -H fd:// -H {{ docker_proto }}://{{ docker_bind_address }}:{{ docker_port }} --containerd=/run/containerd/containerd.sock
+{% endif %}
+{% endif %}
